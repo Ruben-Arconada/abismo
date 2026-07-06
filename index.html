@@ -172,6 +172,7 @@
   const baseV=6.0, vRate=0.02, vMax=15, JOY_R=48;
   // salto variable
   const JV0=2.9, GRAV_HOLD=6.5, GRAV_FALL=13.0, HOLD_MAX=0.34, AIR_FULL=0.70;
+  const COYOTE=0.22;   // margen tipo "coyote": aún puedes saltar/seguir un poco pasado el borde (menos injusto)
 
   const S={READY:0,RUN:1,FALL:2,OVER:3};
   let state=S.READY, best=0, lastBiome=null;
@@ -181,6 +182,7 @@
   // Control: modo ("diestro" | "zurdo" | "desliz") + estado de deslizar + pausa
   let ctrl="diestro"; try{ ctrl=localStorage.getItem("abismo-ctrl")||"diestro"; }catch(e){}
   let swipeVal=0, steerPtr=-1, paused=false; const ptrs={};
+  const jumpFx={x:0,y:0,t:-1};   // rastro breve donde se pulsó para saltar
 
   let ballX,ballY,ballZ,vy,jumping,falling,fallT,idleT;
   let segs,frontier,lastXc;
@@ -266,7 +268,9 @@
         if(ballY<=0){ ballY=0; vy=0; jumping=false; sfxLand(); }
       }
       camZ=ballZ-CAMBACK; genAhead(); segs=segs.filter(s=>s.z1>camZ-1);
-      if(!jumping){ const s=segAt(ballZ); if(!s||Math.abs(ballX-s.xc)>s.half) startFall(); }
+      if(!jumping){ const s=segAt(ballZ);
+        if(s){ if(Math.abs(ballX-s.xc)>s.half) startFall(); }
+        else { const p=segAt(ballZ-COYOTE); if(!p||Math.abs(ballX-p.xc)>p.half) startFall(); } }   // coyote: margen pasado el borde
       updateMotes();
     } else if(state===S.FALL){
       ballY+=vy*dt; vy-=GRAV_FALL*1.7*dt; fallT+=dt; camZ=ballZ-CAMBACK; updateMotes();
@@ -562,9 +566,18 @@
   }
   function drawJoystick(){
     if(state!==S.RUN) return;
-    if(joy.active){ g.strokeStyle="rgba(255,255,255,0.5)"; g.lineWidth=2;
+    // joystick flotante justo en el punto donde actúa (diestro/zurdo activo; y al arrastrar en deslizar)
+    if(joy.active){ g.strokeStyle="rgba(255,255,255,0.45)"; g.lineWidth=2;
       g.beginPath(); g.arc(joy.cx,joy.cy,JOY_R,0,Math.PI*2); g.stroke();
-      g.fillStyle="rgba(255,255,255,0.85)"; g.beginPath(); g.arc(joy.cx+joy.val*JOY_R,joy.cy,16,0,Math.PI*2); g.fill(); }
+      g.fillStyle="rgba(255,255,255,0.8)"; g.beginPath(); g.arc(joy.cx+joy.val*JOY_R,joy.cy,16,0,Math.PI*2); g.fill(); }
+    else if(ctrl==="desliz" && steerPtr>=0 && ptrs[steerPtr]){ const P=ptrs[steerPtr];
+      g.strokeStyle="rgba(255,255,255,0.4)"; g.lineWidth=2;
+      g.beginPath(); g.arc(P.x0,P.y0,JOY_R,0,Math.PI*2); g.stroke();
+      g.fillStyle="rgba(255,255,255,0.72)"; g.beginPath(); g.arc(P.x0+swipeVal*JOY_R,P.y0,15,0,Math.PI*2); g.fill(); }
+    // rastro breve donde se pulsó para saltar
+    if(jumpFx.t>=0){ const age=idleT-jumpFx.t; if(age>=0&&age<0.45){ const rr=1-age/0.45;
+      g.strokeStyle=`rgba(255,255,255,${0.55*rr})`; g.lineWidth=2.5;
+      g.beginPath(); g.arc(jumpFx.x,jumpFx.y,10+age*110,0,Math.PI*2); g.stroke(); } }
     // hint traslúcido al empezar: enseña dónde poner los dedos según el modo
     const a=clamp(1-(idleT-2.6)/1.6,0,1); if(a<=0.02||reduce) return;
     g.save(); g.globalAlpha=a; const cy=H-96-safeBot;
@@ -646,7 +659,7 @@
     if(ctrl==="desliz"){ ptrs[e.pointerId]={x0:p.x,y0:p.y,t:idleT,moved:false}; }
     else { const onJoy = (ctrl==="diestro") ? (p.x<W/2) : (p.x>=W/2);   // zurdo = lados invertidos
       if(onJoy){ joy.active=true; joy.id=e.pointerId; joy.cx=p.x; joy.cy=p.y; joy.val=0; }
-      else { jumpId=e.pointerId; pressJump(); } }
+      else { jumpId=e.pointerId; pressJump(); jumpFx.x=p.x; jumpFx.y=p.y; jumpFx.t=idleT; } }
   });
   cv.addEventListener("pointermove",e=>{ const p=toCanvas(e);
     if(ctrl==="desliz"){ const P=ptrs[e.pointerId]; if(P){
@@ -655,7 +668,7 @@
     else if(joy.active&&e.pointerId===joy.id){ joy.val=clamp((p.x-joy.cx)/JOY_R,-1,1); } });
   const onUp=e=>{
     if(ctrl==="desliz"){ const P=ptrs[e.pointerId];
-      if(P){ if(!P.moved && (idleT-P.t)<0.3) pressJump();   // toque corto (sin arrastrar) = salto
+      if(P){ if(!P.moved && (idleT-P.t)<0.3){ pressJump(); jumpFx.x=P.x0; jumpFx.y=P.y0; jumpFx.t=idleT; }   // toque corto = salto
         delete ptrs[e.pointerId]; if(steerPtr===e.pointerId){ steerPtr=-1; swipeVal=0; } } }
     else { if(joy.active&&e.pointerId===joy.id){ joy.active=false; joy.val=0; } if(e.pointerId===jumpId){ jumpHeld=false; jumpId=-1; } }
   };

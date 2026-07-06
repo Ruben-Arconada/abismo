@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#04050a">
+<meta name="color-scheme" content="dark">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ABISMO">
+<meta name="description" content="Una bola de bolos se fuga de la bolera. Corre por las plataformas sobre el abismo y llega lo más lejos que puedas.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<title>ABISMO</title>
+<style>
+  :root{
+    --sat:env(safe-area-inset-top,0px); --sar:env(safe-area-inset-right,0px);
+    --sab:env(safe-area-inset-bottom,0px); --sal:env(safe-area-inset-left,0px);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;margin:0}
+  html,body{height:100%}
+  body{background:#04050a;font-family:"Helvetica Neue",Arial,sans-serif;color:#fff;
+    position:fixed;inset:0;overflow:hidden;overscroll-behavior:none;
+    touch-action:none;user-select:none;-webkit-user-select:none}
+  .stage{position:fixed;inset:0}
+  canvas{display:block;width:100%;height:100%;background:#0a0f16;touch-action:none}
+  /* Botón de silencio */
+  #mute{position:fixed;z-index:5;top:calc(var(--sat) + 6px);right:calc(var(--sar) + 8px);
+    width:38px;height:38px;padding:0;border:0;border-radius:50%;
+    background:rgba(0,0,0,0.28);color:#fff;font-size:18px;cursor:pointer;opacity:.85;
+    display:flex;align-items:center;justify-content:center;
+    -webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
+  #mute:active{transform:scale(.92)}
+  /* Aviso de girar en vertical */
+  #rotate{position:fixed;inset:0;z-index:10;display:none;padding:24px;gap:14px;
+    background:#04050a;color:#fff;flex-direction:column;align-items:center;justify-content:center;
+    text-align:center;font-weight:700;letter-spacing:.02em}
+  #rotate span{font-size:44px}
+  @media (orientation:landscape) and (max-height:520px){ #rotate{display:flex} }
+</style>
+</head>
+<body>
+  <div class="stage"><canvas id="c" width="360" height="620" aria-label="Juego Abismo"></canvas></div>
+  <button id="mute" aria-label="Silenciar">🔊</button>
+  <div id="rotate"><span>🔄</span>Gira el móvil en vertical</div>
+<script>
+(() => {
+  "use strict";
+  const cv=document.getElementById("c"), g=cv.getContext("2d");
+  let W=360, H=620, DPR=1, safeTop=0, safeBot=0;
+  const reduce=matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------- Cámara ---------- */
+  const FOCAL=300, CAMBACK=3.0, CAMH=2.29;
+  let HORIZON=Math.round(H*0.16);
+  let camZ=-CAMBACK;
+
+  /* ---------- Ajuste a pantalla: full-bleed + retina + áreas seguras ----------
+     Ancho lógico fijo (360) para conservar el encuadre horizontal del juego;
+     la altura lógica se deriva de la proporción real del móvil, así se llena
+     toda la pantalla sin barras negras y sin deformar. */
+  function readSafe(){
+    const cs=getComputedStyle(document.documentElement);
+    const px=n=>parseFloat(cs.getPropertyValue(n))||0;
+    return {t:px('--sat'), b:px('--sab')};
+  }
+  function resize(){
+    const cssW=Math.max(1,window.innerWidth), cssH=Math.max(1,window.innerHeight);
+    DPR=Math.min(window.devicePixelRatio||1, 2);   // tope a 2x: nítido y sin castigar el rendimiento
+    W=360;
+    H=Math.round(W*cssH/cssW);
+    HORIZON=Math.round(H*0.16);
+    cv.width=Math.round(cssW*DPR);
+    cv.height=Math.round(cssH*DPR);
+    g.setTransform(cv.width/W,0,0,cv.width/W,0,0);  // dibujamos en coords lógicas, el lienzo va a resolución del dispositivo
+    const s=readSafe(), k=W/cssW;                   // px CSS -> unidades lógicas
+    safeTop=s.t*k; safeBot=s.b*k;
+  }
+  function proj(x,y,z){ const d=z-camZ; if(d<0.24) return null; const s=FOCAL/d;
+    return {x:W/2+x*s, y:HORIZON+(CAMH-y)*s, s, d}; }
+
+  /* ---------- Sonido (WebAudio, generado por código) + vibración ---------- */
+  let actx=null, master=null, muted=false;
+  function audioResume(){
+    if(!actx){ try{ actx=new (window.AudioContext||window.webkitAudioContext)();
+        master=actx.createGain(); master.gain.value=0.9; master.connect(actx.destination);
+      }catch(e){ actx=null; } }
+    if(actx && actx.state==="suspended") actx.resume();
+  }
+  function tone(freq,dur,o){ o=o||{};
+    if(!actx || muted) return;
+    const t=actx.currentTime+(o.delay||0), osc=actx.createOscillator(), gn=actx.createGain();
+    osc.type=o.type||"sine"; osc.frequency.setValueAtTime(freq,t);
+    if(o.to) osc.frequency.exponentialRampToValueAtTime(Math.max(1,o.to),t+dur);
+    const vol=o.vol||0.2;
+    gn.gain.setValueAtTime(0.0001,t);
+    gn.gain.exponentialRampToValueAtTime(vol,t+0.012);
+    gn.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+    osc.connect(gn).connect(master); osc.start(t); osc.stop(t+dur+0.03);
+  }
+  function buzz(p){ if(!muted && navigator.vibrate){ try{ navigator.vibrate(p); }catch(e){} } }
+  const sfxJump =()=>{ tone(360,0.16,{type:"triangle",vol:0.16,to:640}); buzz(10); };
+  const sfxLand =()=>{ tone(190,0.12,{type:"sine",vol:0.22,to:95});  buzz(12); };
+  const sfxFall =()=>{ tone(430,0.55,{type:"sawtooth",vol:0.20,to:70}); buzz([25,40,60]); };
+  const sfxOver =()=>{ tone(200,0.5,{type:"sine",vol:0.18,to:110,delay:0.05}); };
+  const sfxBiome=()=>{ tone(520,0.14,{type:"sine",vol:0.14}); tone(780,0.18,{type:"sine",vol:0.12,delay:0.12}); buzz(8); };
+  // Botón de silencio (DOM, fuera del lienzo para no robar toques al juego)
+  const muteBtn=document.getElementById("mute");
+  function setMuted(m){ muted=m; muteBtn.textContent=muted?"🔇":"🔊";
+    muteBtn.setAttribute("aria-label",muted?"Activar sonido":"Silenciar"); }
+  muteBtn.addEventListener("click",e=>{ e.stopPropagation(); audioResume(); setMuted(!muted); if(!muted) sfxJump(); });
+
+  /* ---------- Mundo ---------- */
+  const R=0.18, SLAB_D=2.8, FOG_DIST=22, VIEW_AHEAD=26;
+  const BEV_W=0.10, BEV_H=0.13;   // bisel del borde superior de las plataformas
+  const LANE=2.2, HALF=1.05, LEAN_SPEED=3.7;
+  const baseV=6.0, vRate=0.02, vMax=15, JOY_R=48;
+  // salto variable
+  const JV0=2.9, GRAV_HOLD=6.5, GRAV_FALL=13.0, HOLD_MAX=0.34, AIR_FULL=0.70;
+
+  const S={READY:0,RUN:1,FALL:2,OVER:3};
+  let state=S.READY, best=0, lastBiome=null;
+  let kL=false,kR=false;
+  const joy={active:false,id:-1,cx:0,cy:0,val:0};
+  let jumpHeld=false, jumpId=-1, holdTime=0;
+
+  let ballX,ballY,ballZ,vy,jumping,falling,fallT,idleT;
+  let segs,frontier,lastXc;
+
+  const rand=(a,b)=>a+Math.random()*(b-a);
+  const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+  const curV=()=>Math.min(vMax, baseV+Math.max(0,ballZ)*vRate);
+
+  function genAhead(){
+    while(frontier<ballZ+VIEW_AHEAD){
+      const v=curV(), fullReach=v*AIR_FULL;
+      const gap=Math.min(4.8, rand(1.3, Math.max(1.7, 0.82*fullReach)));
+      const z0=frontier+gap, L=rand(3.4,6.2), z1=z0+L;
+      const dm=1.9*clamp(6/v,0.55,1), xc=clamp(lastXc+rand(-dm,dm),-LANE,LANE);
+      segs.push({z0,z1,xc,half:HALF}); frontier=z1; lastXc=xc;
+    }
+  }
+  const segAt=z=>{ for(const s of segs) if(z>=s.z0&&z<=s.z1) return s; return null; };
+  function reset(){
+    ballX=0;ballY=0;ballZ=0;vy=0;jumping=false;falling=false;fallT=0;idleT=0;jumpHeld=false;holdTime=0;
+    segs=[{z0:-2,z1:5,xc:0,half:HALF}]; frontier=5; lastXc=0; lastBiome=null; camZ=ballZ-CAMBACK; genAhead();
+  }
+  function start(){ reset(); state=S.RUN; last=performance.now(); }
+  function pressJump(){ if(state===S.RUN && !jumping && !falling){ jumping=true; vy=JV0; holdTime=0; jumpHeld=true; sfxJump(); } }
+  function startFall(){ state=S.FALL; falling=true; vy=-0.6; fallT=0; sfxFall(); }
+  function leanInput(){ let v=joy.active?joy.val:0; v+=(kR?1:0)-(kL?1:0); return clamp(v,-1,1); }
+
+  const motes=[]; for(let i=0;i<52;i++) motes.push({x:rand(-6,6),y:rand(-2.6,-0.2),z:rand(0,VIEW_AHEAD)});
+  const updateMotes=()=>{ for(const m of motes) if(m.z<camZ+0.4){ m.z+=VIEW_AHEAD+rand(0,6); m.x=rand(-6,6); m.y=rand(-2.6,-0.2);} };
+
+  /* ---------- Biomas ---------- */
+  const mix=(a,b,t)=>[a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t];
+  const rgb=c=>`rgb(${c[0]|0},${c[1]|0},${c[2]|0})`;
+  const rgba=(c,a)=>`rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`;
+  const lum=c=>0.2126*c[0]+0.7152*c[1]+0.0722*c[2];
+  const B=[
+    {name:"CIUDAD", skyTop:[178,192,214], fog:[206,210,220], voidTop:[50,52,62], voidBot:[8,9,14], glow:[240,186,120], top:[108,114,124], side:[72,76,86], decor:[216,212,200]},
+    {name:"MONTAÑA NEVADA", skyTop:[208,230,246], fog:[236,244,250], voidTop:[70,92,112], voidBot:[10,18,28], glow:[144,210,242], top:[238,246,250], side:[182,204,220], decor:[196,222,236]},
+    {name:"CUEVA", skyTop:[40,34,60], fog:[62,54,86], voidTop:[46,36,66], voidBot:[6,4,14], glow:[160,92,218], top:[120,106,150], side:[80,70,108], decor:[92,80,120]},
+    {name:"CUEVA DE LAVA", skyTop:[52,20,16], fog:[96,40,24], voidTop:[104,44,24], voidBot:[24,8,4], glow:[244,118,40], top:[100,82,74], side:[66,54,48], decor:[188,74,30]},
+  ];
+  const PER=90, BLEND=9;
+  function palette(m){
+    const idx=Math.floor(m/PER), local=m-idx*PER;
+    const b0=B[((idx%B.length)+B.length)%B.length], b1=B[(((idx+1)%B.length)+B.length)%B.length];
+    let t= local>PER-BLEND ? (local-(PER-BLEND))/BLEND : 0; t=clamp(t,0,1);
+    const P={}; for(const k of ["skyTop","fog","voidTop","voidBot","glow","top","side","decor"]) P[k]=mix(b0[k],b1[k],t);
+    P.name=t>0.5?b1.name:b0.name; return P;
+  }
+
+  function update(dt){
+    idleT+=dt;
+    if(state===S.RUN){
+      const v=curV(); ballZ+=v*dt;
+      ballX=clamp(ballX+leanInput()*LEAN_SPEED*dt, -(LANE+1.5), (LANE+1.5));
+      if(jumping){
+        holdTime+=dt;
+        const grav=(jumpHeld && vy>0 && holdTime<HOLD_MAX) ? GRAV_HOLD : GRAV_FALL;
+        ballY+=vy*dt; vy-=grav*dt;
+        if(ballY<=0){ ballY=0; vy=0; jumping=false; sfxLand(); }
+      }
+      camZ=ballZ-CAMBACK; genAhead(); segs=segs.filter(s=>s.z1>camZ-1);
+      if(!jumping){ const s=segAt(ballZ); if(!s||Math.abs(ballX-s.xc)>s.half) startFall(); }
+      updateMotes();
+    } else if(state===S.FALL){
+      ballY+=vy*dt; vy-=GRAV_FALL*1.7*dt; fallT+=dt; camZ=ballZ-CAMBACK; updateMotes();
+      if(fallT>0.7){ best=Math.max(best,Math.floor(ballZ)); state=S.OVER; sfxOver(); }
+    } else if(state===S.READY){ ballX=0; ballY=reduce?0:Math.abs(Math.sin(idleT*1.3))*0.07; }
+  }
+
+  /* ---------- Fondo + luz del abismo (con neblina para evitar bordes negros) ---------- */
+  function drawBackground(pal){
+    let gr=g.createLinearGradient(0,0,0,HORIZON+40);
+    gr.addColorStop(0,rgb(pal.skyTop)); gr.addColorStop(1,rgb(pal.fog));
+    g.fillStyle=gr; g.fillRect(0,0,W,HORIZON+40);
+    if(lum(pal.skyTop)>150){ const sun=g.createRadialGradient(W*0.72,HORIZON*0.5,4,W*0.72,HORIZON*0.5,150);
+      sun.addColorStop(0,"rgba(255,255,238,0.5)"); sun.addColorStop(1,"rgba(255,255,238,0)"); g.fillStyle=sun; g.fillRect(0,0,W,HORIZON+40); }
+    const ridge=(amp,step,col,seed0)=>{ g.fillStyle=col; g.beginPath(); g.moveTo(0,HORIZON); let seed=seed0;
+      for(let x=0;x<=W;x+=step){ seed=(seed*9301+49297)%233280; g.lineTo(x,HORIZON-(seed/233280)*amp); }
+      g.lineTo(W,HORIZON+2); g.lineTo(0,HORIZON+2); g.closePath(); g.fill(); };
+    ridge(30,34,rgb(mix(pal.fog,pal.voidTop,0.5)),771);
+    ridge(18,22,rgb(mix(pal.fog,pal.voidTop,0.72)),313);
+    // abismo: borde superior con neblina (no negro) -> luz del bioma abajo
+    let gv=g.createLinearGradient(0,HORIZON,0,H);
+    gv.addColorStop(0,rgb(mix(pal.voidTop,pal.fog,0.35)));
+    gv.addColorStop(0.4,rgb(pal.voidTop));
+    gv.addColorStop(0.72,rgb(mix(pal.voidTop,pal.voidBot,0.7)));
+    gv.addColorStop(1,rgb(mix(pal.voidBot,pal.glow,0.75)));
+    g.fillStyle=gv; g.fillRect(0,HORIZON,W,H-HORIZON);
+    const glow=g.createRadialGradient(W/2,H+20,10,W/2,H+20,H*0.92);
+    glow.addColorStop(0,rgba(pal.glow,0.58)); glow.addColorStop(0.5,rgba(pal.glow,0.17)); glow.addColorStop(1,rgba(pal.glow,0));
+    g.fillStyle=glow; g.fillRect(0,HORIZON,W,H-HORIZON);
+  }
+  function drawMotes(pal){
+    const light=lum(pal.skyTop)>150;
+    g.strokeStyle=light?"rgba(60,70,90,0.3)":"rgba(220,230,255,0.32)"; g.lineWidth=1;
+    for(const m of motes){ const p=proj(m.x,m.y,m.z); if(!p) continue;
+      g.globalAlpha=clamp(0.12+(CAMBACK/m.d)*0.1,0,0.55);
+      g.beginPath(); g.moveTo(p.x,p.y); g.lineTo(p.x,p.y+p.s*0.05+1); g.stroke(); }
+    g.globalAlpha=1;
+  }
+
+  /* ---------- Plataformas: losas 3D con bisel y faldón que se funde al abismo ---------- */
+  function slices(s){
+    const nz=Math.max(s.z0,camZ+0.25), fz=s.z1; if(fz<=camZ+0.25) return null;
+    const SL=6, zs=[],xl=[],xr=[];
+    for(let i=0;i<=SL;i++){ const z=nz+(fz-nz)*(i/SL); const b=0.16*(0.5+0.5*Math.sin(z*1.9+s.z0)); const hw=s.half+b;
+      zs.push(z); xl.push(s.xc-hw); xr.push(s.xc+hw); }
+    return {SL,zs,xl,xr};
+  }
+  function quad(p1,p2,p3,p4,fill){ if(!p1||!p2||!p3||!p4) return; g.fillStyle=fill;
+    g.beginPath(); g.moveTo(p1.x,p1.y); g.lineTo(p2.x,p2.y); g.lineTo(p3.x,p3.y); g.lineTo(p4.x,p4.y); g.closePath(); g.fill(); }
+  // Muro vertical entre dos alturas de mundo (yA arriba, yB abajo) con degradado de varias paradas.
+  function wall(x1,z1,x2,z2,yA,yB,stops){
+    const tA=proj(x1,yA,z1),tB=proj(x2,yA,z2); if(!tA||!tB) return;
+    const bA=proj(x1,yB,z1),bB=proj(x2,yB,z2); if(!bA||!bB) return;
+    const topY=Math.min(tA.y,tB.y), botY=Math.max(bA.y,bB.y);
+    if(botY>topY+1){ const grd=g.createLinearGradient(0,topY,0,botY);
+      for(const st of stops) grd.addColorStop(st[0],st[1]); g.fillStyle=grd; }
+    else g.fillStyle=stops[0][1];
+    g.beginPath(); g.moveTo(tA.x,tA.y); g.lineTo(tB.x,tB.y); g.lineTo(bB.x,bB.y); g.lineTo(bA.x,bA.y); g.closePath(); g.fill();
+  }
+  function drawWalls(s,pal){
+    const S_=slices(s); if(!S_) return; const {SL,zs,xl,xr}=S_;
+    const abyss=mix(pal.voidBot,pal.glow,0.45);   // color del abismo hacia el que funde el faldón
+    // sólido arriba -> transparente y del color del abismo abajo (se funde sin dejar ver el interior)
+    const skirt=base=>[[0,rgba(base,1)],[0.5,rgba(mix(base,abyss,0.45),0.96)],[0.82,rgba(mix(base,abyss,0.85),0.55)],[1,rgba(abyss,0)]];
+    for(let i=0;i<SL;i++){
+      const fog=clamp(((zs[i]+zs[i+1])/2-camZ)/FOG_DIST,0,1);
+      const lc=mix(mix(pal.side,[0,0,0],0.24),pal.fog,fog*0.35);      // pared izq (sombra)
+      const rc=mix(mix(pal.side,[255,255,255],0.06),pal.fog,fog*0.35); // pared der (luz)
+      wall(xl[i],zs[i],xl[i+1],zs[i+1], -BEV_H,-SLAB_D, skirt(lc));
+      wall(xr[i],zs[i],xr[i+1],zs[i+1], -BEV_H,-SLAB_D, skirt(rc));
+    }
+    const fog0=clamp((zs[0]-camZ)/FOG_DIST,0,1);
+    const fc=mix(mix(pal.side,[0,0,0],0.12),pal.fog,fog0*0.4);
+    wall(xl[0],zs[0],xr[0],zs[0], -BEV_H,-SLAB_D, skirt(fc));         // tapa frontal
+  }
+  function drawBevel(s,pal){
+    const S_=slices(s); if(!S_) return; const {SL,zs,xl,xr}=S_;
+    for(let i=0;i<SL;i++){
+      const fog=clamp(((zs[i]+zs[i+1])/2-camZ)/FOG_DIST,0,1);
+      const tc=mix(pal.top,pal.fog,fog*0.7);
+      const lb=rgb(mix(tc,[0,0,0],0.12)), rb=rgb(mix(tc,[255,255,255],0.20));   // bisel izq sombra / der luz
+      quad(proj(xl[i]+BEV_W,0,zs[i]),proj(xl[i+1]+BEV_W,0,zs[i+1]),proj(xl[i+1],-BEV_H,zs[i+1]),proj(xl[i],-BEV_H,zs[i]), lb);
+      quad(proj(xr[i]-BEV_W,0,zs[i]),proj(xr[i+1]-BEV_W,0,zs[i+1]),proj(xr[i+1],-BEV_H,zs[i+1]),proj(xr[i],-BEV_H,zs[i]), rb);
+    }
+    const fog0=clamp((zs[0]-camZ)/FOG_DIST,0,1); const tc=mix(pal.top,pal.fog,fog0*0.7);
+    quad(proj(xl[0]+BEV_W,0,zs[0]),proj(xr[0]-BEV_W,0,zs[0]),proj(xr[0],-BEV_H,zs[0]),proj(xl[0],-BEV_H,zs[0]), rgb(mix(tc,[0,0,0],0.05)));
+  }
+  function drawTop(s,pal){
+    const S_=slices(s); if(!S_) return; const {SL,zs,xl,xr}=S_;
+    for(let i=0;i<SL;i++){
+      const a1=proj(xl[i]+BEV_W,0,zs[i]),a2=proj(xr[i]-BEV_W,0,zs[i]),b1=proj(xl[i+1]+BEV_W,0,zs[i+1]),b2=proj(xr[i+1]-BEV_W,0,zs[i+1]);
+      if(!a1||!a2||!b1||!b2) continue;
+      const fog=clamp(((zs[i]+zs[i+1])/2-camZ)/FOG_DIST,0,1);
+      let base=mix(pal.top,pal.fog,fog*0.85); base=mix(base,[255,255,255],(1-i/SL)*0.06);
+      g.fillStyle=rgb(base); g.beginPath();
+      g.moveTo(a1.x,a1.y); g.lineTo(a2.x,a2.y); g.lineTo(b2.x,b2.y); g.lineTo(b1.x,b1.y); g.closePath(); g.fill();
+    }
+    let seed=Math.floor((s.z0+1000)*97)%100000; const rnd=()=>{ seed=(seed*1103515245+12345)&0x7fffffff; return seed/0x7fffffff; };
+    for(let k=0;k<7;k++){
+      const z=zs[0]+(zs[SL]-zs[0])*rnd(); const b=0.16*(0.5+0.5*Math.sin(z*1.9+s.z0)); const hw=s.half+b;
+      const p=proj(s.xc+(rnd()*2-1)*hw*0.8,0.01,z); if(!p) continue;
+      const fog=clamp((z-camZ)/FOG_DIST,0,1); if(fog>0.9||p.y>H+40||p.y<-40) continue;
+      g.fillStyle=rgba(mix(pal.decor,pal.top,0.35+fog*0.5),0.9); const r=Math.min(6,Math.max(0.6,p.s*0.016));
+      g.beginPath(); g.arc(p.x,p.y,r,0,Math.PI*2); g.fill();
+    }
+  }
+  function drawPlatforms(pal){
+    const ord=[...segs].sort((a,b)=>b.z1-a.z1);
+    // por losa, de lejos a cerca: la losa cercana (sólida) tapa a la lejana, y la transparencia del faldón solo deja ver el fondo o losas ya pintadas
+    for(const s of ord){ drawWalls(s,pal); drawBevel(s,pal); drawTop(s,pal); }
+  }
+
+  /* ---------- Bola de bolos + sombra 3D (solo si hay suelo debajo) ---------- */
+  const HOLES=[[-0.17,0.0],[0.17,0.0],[0.0,0.34]];   // 2 dedos + pulgar
+  function drawShadow(){
+    if(state===S.OVER||state===S.FALL) return;
+    const s=segAt(ballZ); if(!s) return;                        // sin plataforma bajo la bola -> sin sombra
+    if(Math.abs(ballX-s.xc) > s.half+0.04) return;              // la bola no está sobre el suelo
+    const sp=proj(ballX,0,ballZ); if(!sp) return;
+    const sB=FOCAL/CAMBACK, lift=clamp(ballY,0,2.2);
+    const fade=clamp(1-lift*0.40,0.10,1);                       // cuanto más alta la bola, más tenue la sombra
+    const rx=R*sB*1.02*(1-lift*0.05), ry=rx*0.42;
+    g.save(); g.translate(sp.x,sp.y); g.scale(1,ry/rx);
+    const grd=g.createRadialGradient(0,0,0,0,0,rx);
+    grd.addColorStop(0,`rgba(0,0,0,${0.44*fade})`); grd.addColorStop(0.65,`rgba(0,0,0,${0.24*fade})`); grd.addColorStop(1,"rgba(0,0,0,0)");
+    g.fillStyle=grd; g.beginPath(); g.arc(0,0,rx,0,Math.PI*2); g.fill(); g.restore();
+  }
+  function drawBall(pal){
+    drawShadow();
+    const sB=FOCAL/CAMBACK, bp=proj(ballX,ballY,ballZ); if(!bp) return;
+    const sy=bp.y;
+    const grow=(state===S.FALL)?clamp(1+ballY*0.9,0.05,1):(1+ballY*0.9);
+    const rad=Math.max(2,R*sB*grow);
+    // esfera brillante (bola de bolos azul)
+    const grd=g.createRadialGradient(bp.x-rad*0.34,sy-rad*0.40,rad*0.06, bp.x,sy,rad);
+    grd.addColorStop(0,"#eaf4ff"); grd.addColorStop(0.26,"#5f9fe0"); grd.addColorStop(0.60,"#2a54a8"); grd.addColorStop(1,"#0a1838");
+    g.beginPath(); g.arc(bp.x,sy,rad,0,Math.PI*2); g.fillStyle=grd; g.fill();
+    g.save(); g.beginPath(); g.arc(bp.x,sy,rad,0,Math.PI*2); g.clip();
+    // veta de mármol sutil
+    g.globalAlpha=0.16; g.strokeStyle="#cfe4ff"; g.lineWidth=rad*0.12;
+    g.beginPath(); g.arc(bp.x+rad*0.25,sy+rad*0.15,rad*0.95,Math.PI*0.85,Math.PI*1.65); g.stroke(); g.globalAlpha=1;
+    // agujeros de dedos (giran con el rodar)
+    const roll=ballZ*3.0;
+    for(const [ox,ph] of HOLES){ const th=roll+ph, face=Math.sin(th); if(face<=0.12) continue;
+      const hx=bp.x+ox*rad*(0.55+0.45*face), hy=sy+Math.cos(th)*rad*0.70, hr=rad*0.15*face;
+      g.beginPath(); g.ellipse(hx,hy,hr,hr*(0.5+0.5*face),0,0,Math.PI*2);
+      g.fillStyle=`rgba(6,12,28,${0.92*face})`; g.fill();
+      g.lineWidth=Math.max(0.5,rad*0.028); g.strokeStyle=`rgba(200,222,255,${0.28*face})`;
+      g.beginPath(); g.ellipse(hx,hy,hr,hr*(0.5+0.5*face),0,Math.PI*0.1,Math.PI*0.9); g.stroke(); }
+    g.restore();
+    // luz de borde (separa la bola de fondos oscuros como la cueva o la lava)
+    g.lineWidth=Math.max(1,rad*0.05); g.strokeStyle="rgba(150,195,255,0.45)";
+    g.beginPath(); g.arc(bp.x,sy,rad*0.97,Math.PI*0.08,Math.PI*0.62); g.stroke();
+    // contorno + brillo especular
+    g.lineWidth=1.2; g.strokeStyle="rgba(5,12,36,0.5)"; g.beginPath(); g.arc(bp.x,sy,rad,0,Math.PI*2); g.stroke();
+    g.beginPath(); g.arc(bp.x-rad*0.34,sy-rad*0.40,rad*0.18,0,Math.PI*2); g.fillStyle="rgba(255,255,255,0.9)"; g.fill();
+  }
+
+  /* ---------- HUD, joystick, viñeta, tarjetas ---------- */
+  function drawHUD(pal){
+    const meters=Math.max(0,Math.floor(ballZ)), light=lum(pal.skyTop)>150 && state!==S.FALL;
+    const tc=light?"rgba(20,26,34,0.92)":"rgba(255,255,255,0.95)", sc=light?"rgba(20,26,34,0.5)":"rgba(255,255,255,0.55)";
+    const top=safeTop;
+    g.textAlign="center"; g.textBaseline="top";
+    g.fillStyle=tc; g.font='800 48px "Helvetica Neue",Arial,sans-serif'; g.fillText(String(meters),W/2,top+14);
+    g.font='700 13px "Helvetica Neue",Arial,sans-serif'; g.fillStyle=sc;
+    g.fillText("METROS",W/2,top+64); g.fillText("MEJOR  "+best,W/2,top+85);
+    g.textAlign="left"; g.fillText(pal.name,14,top+16);
+  }
+  function drawJoystick(){
+    if(state!==S.RUN) return;
+    if(joy.active){ g.strokeStyle="rgba(255,255,255,0.5)"; g.lineWidth=2;
+      g.beginPath(); g.arc(joy.cx,joy.cy,JOY_R,0,Math.PI*2); g.stroke();
+      g.fillStyle="rgba(255,255,255,0.85)"; g.beginPath(); g.arc(joy.cx+joy.val*JOY_R,joy.cy,16,0,Math.PI*2); g.fill(); }
+    if(idleT<4.5 && !reduce){ g.globalAlpha=clamp(1-(idleT-2.5)/2,0,1); g.fillStyle="rgba(255,255,255,0.7)";
+      g.font='700 12px "Helvetica Neue",Arial,sans-serif'; g.textBaseline="bottom";
+      g.textAlign="left"; g.fillText("◄ joystick", 14, H-14-safeBot);
+      g.textAlign="right"; g.fillText("mantén = salto largo ▲", W-14, H-14-safeBot); g.globalAlpha=1; }
+  }
+  function vignette(){ const v=g.createRadialGradient(W/2,H*0.5,H*0.32,W/2,H*0.5,H*0.78);
+    v.addColorStop(0,"rgba(0,0,0,0)"); v.addColorStop(1,"rgba(0,0,0,0.35)"); g.fillStyle=v; g.fillRect(0,0,W,H); }
+  function fitFont(text,maxW,weight,size){
+    let s=size;
+    while(s>8){ g.font=weight+" "+s+'px "Helvetica Neue",Arial,sans-serif'; if(g.measureText(text).width<=maxW) break; s--; }
+    return s;
+  }
+  function cardR(title,sub,btn){
+    g.fillStyle="rgba(0,0,0,0.42)"; g.fillRect(0,0,W,H); g.textAlign="center"; g.textBaseline="alphabetic";
+    const cx=W/2, cy=H*0.42, maxW=W-36;
+    const ts=fitFont(title,maxW,"800",42); g.font='800 '+ts+'px "Helvetica Neue",Arial,sans-serif';
+    g.fillStyle="#fff"; g.fillText(title,cx,cy);
+    if(sub){ g.fillStyle="rgba(255,255,255,0.85)"; let yy=cy+30;
+      for(const ln of sub.split("\n")){ const ss=fitFont(ln,maxW,"700",14);
+        g.font='700 '+ss+'px "Helvetica Neue",Arial,sans-serif'; g.fillText(ln,cx,yy); yy+=20; } }
+    if(reduce||Math.floor(idleT*1.4)%2===0){ const bs=fitFont(btn,maxW,"700",15);
+      g.font='700 '+bs+'px "Helvetica Neue",Arial,sans-serif'; g.fillStyle="rgba(255,255,255,0.95)"; g.fillText(btn,cx,cy+78); }
+  }
+
+  function render(){
+    const pal=palette((state===S.RUN||state===S.FALL||state===S.OVER)?Math.max(0,Math.floor(ballZ)):0);
+    if(state===S.RUN){ if(lastBiome!==null && pal.name!==lastBiome) sfxBiome(); lastBiome=pal.name; }
+    drawBackground(pal); drawMotes(pal); drawPlatforms(pal); drawBall(pal);
+    if(state===S.RUN||state===S.FALL||state===S.OVER) drawHUD(pal);
+    drawJoystick(); vignette();
+    if(state===S.READY) cardR("ABISMO","Izquierda: joystick  ·  Derecha: saltar\n(mantén pulsado = salto más largo)","TOCA PARA EMPEZAR");
+    else if(state===S.OVER) cardR("CAÍSTE",Math.floor(ballZ)+" metros · mejor "+best,"TOCA PARA REINTENTAR");
+  }
+
+  let last=performance.now();
+  function loop(now){ const dt=Math.min(0.05,(now-last)/1000); last=now; update(dt); render(); requestAnimationFrame(loop); }
+
+  /* ---------- Entrada ---------- */
+  const toCanvas=e=>{ const r=cv.getBoundingClientRect(); return {x:(e.clientX-r.left)*(W/r.width), y:(e.clientY-r.top)*(H/r.height)}; };
+  cv.addEventListener("pointerdown",e=>{ e.preventDefault(); audioResume();
+    if(state===S.READY||state===S.OVER){ firstGestureFullscreen(); start(); return; }
+    if(state!==S.RUN) return; const p=toCanvas(e);
+    if(p.x<W/2){ joy.active=true; joy.id=e.pointerId; joy.cx=p.x; joy.cy=p.y; joy.val=0; }
+    else { jumpId=e.pointerId; pressJump(); }
+  });
+  cv.addEventListener("pointermove",e=>{ if(joy.active&&e.pointerId===joy.id){ const p=toCanvas(e); joy.val=clamp((p.x-joy.cx)/JOY_R,-1,1);} });
+  const onUp=e=>{ if(joy.active&&e.pointerId===joy.id){ joy.active=false; joy.val=0; } if(e.pointerId===jumpId){ jumpHeld=false; jumpId=-1; } };
+  cv.addEventListener("pointerup",onUp); cv.addEventListener("pointercancel",onUp);
+  addEventListener("keydown",e=>{
+    if(e.key==="ArrowLeft"){kL=true;e.preventDefault();}
+    else if(e.key==="ArrowRight"){kR=true;e.preventDefault();}
+    else if(e.key===" "||e.key==="ArrowUp"||e.key==="Enter"){ if(!e.repeat){ audioResume(); if(state===S.READY||state===S.OVER) start(); else pressJump(); } e.preventDefault(); }
+  },{passive:false});
+  addEventListener("keyup",e=>{ if(e.key==="ArrowLeft")kL=false; else if(e.key==="ArrowRight")kR=false;
+    else if(e.key===" "||e.key==="ArrowUp"||e.key==="Enter"){ jumpHeld=false; } });
+  addEventListener("blur",()=>{kL=false;kR=false;joy.active=false;joy.val=0;jumpHeld=false;});
+
+  /* ---------- Pantalla completa (Android/desktop) ---------- */
+  let fsAsked=false;
+  function firstGestureFullscreen(){
+    if(fsAsked) return; fsAsked=true;
+    const el=document.documentElement, rq=el.requestFullscreen||el.webkitRequestFullscreen;
+    if(rq){ try{ const p=rq.call(el); if(p&&p.catch) p.catch(()=>{}); }catch(e){} }
+  }
+
+  /* ---------- PWA: service worker (instalable + offline) ---------- */
+  if("serviceWorker" in navigator){ addEventListener("load",()=>{ navigator.serviceWorker.register("sw.js").catch(()=>{}); }); }
+
+  addEventListener("resize",resize);
+  addEventListener("orientationchange",resize);
+  if(window.visualViewport) visualViewport.addEventListener("resize",resize);
+  document.addEventListener("visibilitychange",()=>{ if(!document.hidden) last=performance.now(); });
+
+  reset(); resize(); requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

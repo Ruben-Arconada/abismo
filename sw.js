@@ -1,5 +1,5 @@
-/* ABISMO — service worker (offline, cache-first para los propios recursos) */
-const CACHE = "abismo-v1";
+/* ABISMO — service worker (offline; network-first para el HTML, cache-first para estáticos) */
+const CACHE = "abismo-v2";
 const ASSETS = [
   ".",
   "index.html",
@@ -22,11 +22,24 @@ self.addEventListener("activate", e => {
 });
 
 self.addEventListener("fetch", e => {
-  if (e.request.method !== "GET") return;
+  const req = e.request;
+  if (req.method !== "GET") return;
+  // El documento va network-first: al desplegar se ve la versión nueva; offline cae a la caché.
+  if (req.mode === "navigate") {
+    e.respondWith(
+      fetch(req).then(resp => {
+        const copy = resp.clone();
+        caches.open(CACHE).then(c => c.put("index.html", copy)).catch(() => {});
+        return resp;
+      }).catch(() => caches.match("index.html"))
+    );
+    return;
+  }
+  // Estáticos (iconos, manifest): cache-first.
   e.respondWith(
-    caches.match(e.request).then(hit => hit || fetch(e.request).then(resp => {
+    caches.match(req).then(hit => hit || fetch(req).then(resp => {
       const copy = resp.clone();
-      caches.open(CACHE).then(c => c.put(e.request, copy)).catch(() => {});
+      caches.open(CACHE).then(c => c.put(req, copy)).catch(() => {});
       return resp;
     }).catch(() => caches.match("index.html")))
   );

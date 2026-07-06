@@ -59,13 +59,45 @@
     -webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px);animation:coverpulse 1.3s ease-in-out infinite}
   @keyframes coverpulse{0%,100%{opacity:.6}50%{opacity:1}}
   @media (prefers-reduced-motion:reduce){#coverPlay{animation:none}}
+  /* Selector de control en la portada */
+  #coverCtrl{position:absolute;left:0;right:0;bottom:calc(var(--sab) + 94px);display:flex;gap:8px;justify-content:center;z-index:1;flex-wrap:wrap;padding:0 12px}
+  #coverCtrl button{font:700 12px/1 "Helvetica Neue",Arial,sans-serif;color:#fff;padding:9px 13px;border:1.5px solid rgba(255,255,255,.35);border-radius:999px;background:rgba(4,5,10,.45);-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}
+  #coverCtrl button.on{background:rgba(255,255,255,.92);color:#111;border-color:#fff}
+  /* Engranaje de ajustes */
+  #gear{position:fixed;z-index:5;top:calc(var(--sat) + 6px);right:calc(var(--sar) + 52px);
+    width:38px;height:38px;padding:0;border:0;border-radius:50%;background:rgba(0,0,0,.28);color:#fff;font-size:17px;
+    display:flex;align-items:center;justify-content:center;-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);opacity:.85}
+  #gear:active{transform:scale(.92)}
+  /* Panel de ajustes */
+  #settings{position:fixed;inset:0;z-index:15;display:none;align-items:center;justify-content:center;padding:24px;
+    background:rgba(4,5,10,.72);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
+  #settings.show{display:flex}
+  #settingsBox{background:#12141f;border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:20px;width:min(340px,88vw);text-align:center}
+  #settingsBox h3{font:800 20px/1 "Helvetica Neue",Arial,sans-serif}
+  #settingsBox p{font:600 12px/1.3 "Helvetica Neue",Arial;color:rgba(255,255,255,.6);margin:4px 0 14px}
+  .ctrlopt{display:block;width:100%;font:700 14px/1.2 "Helvetica Neue",Arial;color:#fff;text-align:left;
+    padding:12px 14px;margin:7px 0;border:1.5px solid rgba(255,255,255,.2);border-radius:12px;background:rgba(255,255,255,.05)}
+  .ctrlopt small{display:block;font-weight:600;font-size:11px;color:rgba(255,255,255,.55);margin-top:3px}
+  .ctrlopt.on{background:rgba(255,255,255,.92);color:#111;border-color:#fff}
+  .ctrlopt.on small{color:rgba(0,0,0,.5)}
+  #settingsClose{margin-top:10px;font:700 14px/1 "Helvetica Neue",Arial;color:#fff;background:none;border:0;padding:9px 16px}
 </style>
 </head>
 <body>
   <div class="stage"><canvas id="c" width="360" height="620" aria-label="Juego Abismo"></canvas></div>
   <button id="mute" aria-label="Silenciar">🔊</button>
   <div id="rotate"><span>🔄</span>Gira el móvil en vertical</div>
-  <div id="cover"><div id="coverTitle">ABISMO</div><div id="coverPlay">▶  TOCA PARA JUGAR</div></div>
+  <div id="cover"><div id="coverTitle">ABISMO</div>
+    <div id="coverCtrl"><button data-c="diestro">Diestro</button><button data-c="zurdo">Zurdo</button><button data-c="desliz">Deslizar</button></div>
+    <div id="coverPlay">▶  TOCA PARA JUGAR</div></div>
+  <button id="gear" aria-label="Ajustes">⚙️</button>
+  <div id="settings"><div id="settingsBox">
+    <h3>Controles</h3><p>Elige cómo mover y saltar</p>
+    <button class="ctrlopt" data-c="diestro">Diestro<small>Joystick izquierda · saltar derecha</small></button>
+    <button class="ctrlopt" data-c="zurdo">Zurdo<small>Saltar izquierda · joystick derecha</small></button>
+    <button class="ctrlopt" data-c="desliz">Deslizar + tocar<small>Desliza para mover · toca para saltar</small></button>
+    <button id="settingsClose">Seguir</button>
+  </div></div>
 <script>
 (() => {
   "use strict";
@@ -146,6 +178,9 @@
   let kL=false,kR=false;
   const joy={active:false,id:-1,cx:0,cy:0,val:0};
   let jumpHeld=false, jumpId=-1, holdTime=0;
+  // Control: modo ("diestro" | "zurdo" | "desliz") + estado de deslizar + pausa
+  let ctrl="diestro"; try{ ctrl=localStorage.getItem("abismo-ctrl")||"diestro"; }catch(e){}
+  let swipeVal=0, steerPtr=-1, paused=false; const ptrs={};
 
   let ballX,ballY,ballZ,vy,jumping,falling,fallT,idleT;
   let segs,frontier,lastXc;
@@ -171,7 +206,7 @@
   function start(){ reset(); state=S.RUN; last=performance.now(); }
   function pressJump(){ if(state===S.RUN && !jumping && !falling){ jumping=true; vy=JV0; holdTime=0; jumpHeld=true; sfxJump(); } }
   function startFall(){ state=S.FALL; falling=true; vy=-0.6; fallT=0; sfxFall(); }
-  function leanInput(){ let v=joy.active?joy.val:0; v+=(kR?1:0)-(kL?1:0); return clamp(v,-1,1); }
+  function leanInput(){ let v = ctrl==="desliz" ? swipeVal : (joy.active?joy.val:0); v+=(kR?1:0)-(kL?1:0); return clamp(v,-1,1); }
 
   const motes=[]; for(let i=0;i<52;i++) motes.push({x:rand(-6,6),y:rand(-2.6,-0.2),z:rand(0,VIEW_AHEAD)});
   const updateMotes=()=>{ for(const m of motes) if(m.z<camZ+0.4){ m.z+=VIEW_AHEAD+rand(0,6); m.x=rand(-6,6); m.y=rand(-2.6,-0.2);} };
@@ -530,10 +565,27 @@
     if(joy.active){ g.strokeStyle="rgba(255,255,255,0.5)"; g.lineWidth=2;
       g.beginPath(); g.arc(joy.cx,joy.cy,JOY_R,0,Math.PI*2); g.stroke();
       g.fillStyle="rgba(255,255,255,0.85)"; g.beginPath(); g.arc(joy.cx+joy.val*JOY_R,joy.cy,16,0,Math.PI*2); g.fill(); }
-    if(idleT<4.5 && !reduce){ g.globalAlpha=clamp(1-(idleT-2.5)/2,0,1); g.fillStyle="rgba(255,255,255,0.7)";
-      g.font='700 12px "Helvetica Neue",Arial,sans-serif'; g.textBaseline="bottom";
-      g.textAlign="left"; g.fillText("◄ joystick", 14, H-14-safeBot);
-      g.textAlign="right"; g.fillText("mantén = salto largo ▲", W-14, H-14-safeBot); g.globalAlpha=1; }
+    // hint traslúcido al empezar: enseña dónde poner los dedos según el modo
+    const a=clamp(1-(idleT-2.6)/1.6,0,1); if(a<=0.02||reduce) return;
+    g.save(); g.globalAlpha=a; const cy=H-96-safeBot;
+    g.textAlign="center"; g.textBaseline="middle"; g.font='700 12px "Helvetica Neue",Arial,sans-serif'; g.lineWidth=2;
+    if(ctrl==="desliz"){
+      const cx=W/2; g.strokeStyle="rgba(255,255,255,0.45)";
+      g.beginPath(); g.moveTo(cx-48,cy); g.lineTo(cx+48,cy); g.stroke();
+      g.fillStyle="rgba(255,255,255,0.55)";
+      g.beginPath(); g.moveTo(cx-48,cy); g.lineTo(cx-38,cy-6); g.lineTo(cx-38,cy+6); g.closePath(); g.fill();
+      g.beginPath(); g.moveTo(cx+48,cy); g.lineTo(cx+38,cy-6); g.lineTo(cx+38,cy+6); g.closePath(); g.fill();
+      g.fillStyle="rgba(255,255,255,0.9)"; g.fillText("desliza para mover · toca para saltar",cx,cy+22);
+    } else {
+      const joyLeft=(ctrl==="diestro"), jx=(joyLeft?W*0.24:W*0.76), bx=(joyLeft?W*0.76:W*0.24);
+      g.strokeStyle="rgba(255,255,255,0.45)";
+      g.beginPath(); g.arc(jx,cy,JOY_R*0.72,0,Math.PI*2); g.stroke();
+      g.fillStyle="rgba(255,255,255,0.3)"; g.beginPath(); g.arc(jx,cy,12,0,Math.PI*2); g.fill();
+      g.strokeStyle="rgba(255,255,255,0.45)"; g.beginPath(); g.arc(bx,cy,25,0,Math.PI*2); g.stroke();
+      g.fillStyle="rgba(255,255,255,0.6)"; g.beginPath(); g.moveTo(bx,cy-9); g.lineTo(bx-8,cy+6); g.lineTo(bx+8,cy+6); g.closePath(); g.fill();
+      g.fillStyle="rgba(255,255,255,0.9)"; g.fillText("mover",jx,cy+JOY_R*0.72+14); g.fillText("saltar",bx,cy+40);
+    }
+    g.restore();
   }
   function vignette(){ const v=g.createRadialGradient(W/2,H*0.5,H*0.32,W/2,H*0.5,H*0.78);
     v.addColorStop(0,"rgba(0,0,0,0)"); v.addColorStop(1,"rgba(0,0,0,0.35)"); g.fillStyle=v; g.fillRect(0,0,W,H); }
@@ -565,7 +617,7 @@
   }
 
   let last=performance.now();
-  function loop(now){ const dt=Math.min(0.05,(now-last)/1000); last=now; update(dt); render(); requestAnimationFrame(loop); }
+  function loop(now){ const dt=Math.min(0.05,(now-last)/1000); last=now; if(!paused) update(dt); render(); requestAnimationFrame(loop); }
 
   /* ---------- Entrada ---------- */
   const toCanvas=e=>{ const r=cv.getBoundingClientRect(); return {x:(e.clientX-r.left)*(W/r.width), y:(e.clientY-r.top)*(H/r.height)}; };
@@ -575,14 +627,38 @@
     audioResume(); firstGestureFullscreen(); if(state===S.READY) start();
     cover.classList.add("hide"); setTimeout(()=>{ if(cover) cover.style.display="none"; },600); }
   if(cover) cover.addEventListener("pointerdown",e=>{ e.preventDefault(); dismissCover(); });
+  // Selección de control (portada + engranaje ⚙️), recordada en localStorage
+  const gearBtn=document.getElementById("gear"), settings=document.getElementById("settings");
+  const ctrlBtns=[...document.querySelectorAll("#coverCtrl button, .ctrlopt")];
+  function updateCtrlUI(){ ctrlBtns.forEach(b=>b.classList.toggle("on", b.dataset.c===ctrl)); }
+  function setCtrl(c){ ctrl=c; try{ localStorage.setItem("abismo-ctrl",c); }catch(e){}
+    joy.active=false; joy.val=0; swipeVal=0; steerPtr=-1; for(const k in ptrs) delete ptrs[k]; updateCtrlUI(); }
+  ctrlBtns.forEach(b=> b.addEventListener("pointerdown",e=>{ e.preventDefault(); e.stopPropagation(); audioResume(); setCtrl(b.dataset.c); }));
+  function openSettings(){ settings.classList.add("show"); if(state===S.RUN) paused=true; }
+  function closeSettings(){ settings.classList.remove("show"); if(paused){ paused=false; last=performance.now(); } }
+  gearBtn.addEventListener("pointerdown",e=>{ e.preventDefault(); e.stopPropagation(); audioResume(); openSettings(); });
+  document.getElementById("settingsClose").addEventListener("pointerdown",e=>{ e.preventDefault(); e.stopPropagation(); closeSettings(); });
+  settings.addEventListener("pointerdown",e=>{ if(e.target===settings){ e.preventDefault(); closeSettings(); } });
+  updateCtrlUI();
   cv.addEventListener("pointerdown",e=>{ e.preventDefault(); audioResume();
     if(state===S.READY||state===S.OVER){ firstGestureFullscreen(); start(); return; }
-    if(state!==S.RUN) return; const p=toCanvas(e);
-    if(p.x<W/2){ joy.active=true; joy.id=e.pointerId; joy.cx=p.x; joy.cy=p.y; joy.val=0; }
-    else { jumpId=e.pointerId; pressJump(); }
+    if(state!==S.RUN||paused) return; const p=toCanvas(e);
+    if(ctrl==="desliz"){ ptrs[e.pointerId]={x0:p.x,y0:p.y,t:idleT,moved:false}; }
+    else { const onJoy = (ctrl==="diestro") ? (p.x<W/2) : (p.x>=W/2);   // zurdo = lados invertidos
+      if(onJoy){ joy.active=true; joy.id=e.pointerId; joy.cx=p.x; joy.cy=p.y; joy.val=0; }
+      else { jumpId=e.pointerId; pressJump(); } }
   });
-  cv.addEventListener("pointermove",e=>{ if(joy.active&&e.pointerId===joy.id){ const p=toCanvas(e); joy.val=clamp((p.x-joy.cx)/JOY_R,-1,1);} });
-  const onUp=e=>{ if(joy.active&&e.pointerId===joy.id){ joy.active=false; joy.val=0; } if(e.pointerId===jumpId){ jumpHeld=false; jumpId=-1; } };
+  cv.addEventListener("pointermove",e=>{ const p=toCanvas(e);
+    if(ctrl==="desliz"){ const P=ptrs[e.pointerId]; if(P){
+      if(Math.abs(p.x-P.x0)>6||Math.abs(p.y-P.y0)>6) P.moved=true;
+      if(P.moved){ steerPtr=e.pointerId; swipeVal=clamp((p.x-P.x0)/JOY_R,-1,1); } } }
+    else if(joy.active&&e.pointerId===joy.id){ joy.val=clamp((p.x-joy.cx)/JOY_R,-1,1); } });
+  const onUp=e=>{
+    if(ctrl==="desliz"){ const P=ptrs[e.pointerId];
+      if(P){ if(!P.moved && (idleT-P.t)<0.3) pressJump();   // toque corto (sin arrastrar) = salto
+        delete ptrs[e.pointerId]; if(steerPtr===e.pointerId){ steerPtr=-1; swipeVal=0; } } }
+    else { if(joy.active&&e.pointerId===joy.id){ joy.active=false; joy.val=0; } if(e.pointerId===jumpId){ jumpHeld=false; jumpId=-1; } }
+  };
   cv.addEventListener("pointerup",onUp); cv.addEventListener("pointercancel",onUp);
   addEventListener("keydown",e=>{
     if(e.key==="ArrowLeft"){kL=true;e.preventDefault();}

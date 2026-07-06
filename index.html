@@ -160,13 +160,13 @@
       const gap=Math.min(4.8, rand(1.3, Math.max(1.7, 0.82*fullReach)));
       const z0=frontier+gap, L=rand(3.4,6.2), z1=z0+L;
       const dm=1.9*clamp(6/v,0.55,1), xc=clamp(lastXc+rand(-dm,dm),-LANE,LANE);
-      segs.push({z0,z1,xc,half:HALF}); frontier=z1; lastXc=xc;
+      segs.push({z0,z1,xc,half:HALF,props:makeProps(z0,z1,xc)}); frontier=z1; lastXc=xc;
     }
   }
   const segAt=z=>{ for(const s of segs) if(z>=s.z0&&z<=s.z1) return s; return null; };
   function reset(){
     ballX=0;ballY=0;ballZ=0;vy=0;jumping=false;falling=false;fallT=0;idleT=0;jumpHeld=false;holdTime=0;
-    segs=[{z0:-2,z1:5,xc:0,half:HALF}]; frontier=5; lastXc=0; lastBiome=null; camZ=ballZ-CAMBACK; genAhead();
+    segs=[{z0:-2,z1:5,xc:0,half:HALF,props:makeProps(-2,5,0)}]; frontier=5; lastXc=0; lastBiome=null; camZ=ballZ-CAMBACK; genAhead();
   }
   function start(){ reset(); state=S.RUN; last=performance.now(); }
   function pressJump(){ if(state===S.RUN && !jumping && !falling){ jumping=true; vy=JV0; holdTime=0; jumpHeld=true; sfxJump(); } }
@@ -209,6 +209,15 @@
     return P;
   }
   const bgWeight=(pal,type)=>(pal.b0.bg===type?1-pal.t:0)+(pal.b1.bg===type?pal.t:0);
+  // Decoración por bioma: props que ruedan con el mundo (en el borde de la plataforma)
+  const PROP=["farola","arbol","pino","pino_nieve","cristal","roca"];
+  const biomeIdxAt=z=>((Math.floor(Math.max(0,z)/PER)%B.length)+B.length)%B.length;
+  function makeProps(z0,z1,xc){
+    const type=PROP[biomeIdxAt(z0)], list=[], n=1+Math.floor(Math.random()*2.6);
+    for(let k=0;k<n;k++){ const side=Math.random()<0.5?-1:1;
+      list.push({type, x:xc+side*(HALF-0.12), z:rand(z0+0.4,z1-0.4), s:rand(0.82,1.18)}); }
+    return list;
+  }
 
   function update(dt){
     idleT+=dt;
@@ -417,10 +426,46 @@
     }
     g.globalAlpha=1;
   }
+  function drawProp(pr,pal){   // billboard en el borde de la plataforma, escalado por profundidad
+    const base=proj(pr.x,0,pr.z); if(!base) return;
+    if(base.y<-30||base.y>H+30) return;
+    const fog=clamp((pr.z-camZ)/FOG_DIST,0,1); if(fog>0.94) return;
+    const u=base.s*pr.s, bx=base.x, by=base.y, pw=Math.max(1,u*0.05);
+    const F=c=>rgb(mix(c,pal.fog,fog*0.7));
+    if(pr.type==="farola"){
+      const H0=u*1.7; g.fillStyle=F([120,124,132]); g.fillRect(bx-pw/2,by-H0,pw,H0);
+      g.fillStyle=F([96,98,106]); g.fillRect(bx-u*0.13,by-H0-pw,u*0.26,pw*1.6);
+      const gl=g.createRadialGradient(bx,by-H0,1,bx,by-H0,u*0.55);
+      gl.addColorStop(0,"rgba(255,222,140,0.55)"); gl.addColorStop(1,"rgba(255,222,140,0)");
+      g.fillStyle=gl; g.beginPath(); g.arc(bx,by-H0,u*0.55,0,Math.PI*2); g.fill();
+      g.fillStyle="rgba(255,236,170,0.95)"; g.beginPath(); g.arc(bx,by-H0,Math.max(1.5,u*0.07),0,Math.PI*2); g.fill();
+    } else if(pr.type==="arbol"){
+      const th=u*0.55, r=u*0.36; g.fillStyle=F([96,72,50]); g.fillRect(bx-pw*0.8,by-th,pw*1.6,th);
+      g.fillStyle=F([68,138,68]);
+      g.beginPath(); g.arc(bx,by-th-r*0.8,r,0,Math.PI*2); g.arc(bx-r*0.65,by-th-r*0.1,r*0.72,0,Math.PI*2); g.arc(bx+r*0.65,by-th-r*0.1,r*0.72,0,Math.PI*2); g.fill();
+    } else if(pr.type==="pino"||pr.type==="pino_nieve"){
+      const th=u*0.28, snow=pr.type==="pino_nieve", col=F([52,102,66]), H0=u*1.35, w0=u*0.34;
+      g.fillStyle=F([88,66,48]); g.fillRect(bx-pw*0.7,by-th,pw*1.4,th);
+      for(let L=0;L<3;L++){ const yb=by-th-(H0-th)*L/3, hh=(H0-th)*0.44, ww=w0*(1-L*0.24);
+        g.fillStyle=col; g.beginPath(); g.moveTo(bx,yb-hh); g.lineTo(bx-ww,yb); g.lineTo(bx+ww,yb); g.closePath(); g.fill();
+        if(snow){ g.fillStyle="rgba(240,248,252,0.92)"; g.beginPath(); g.moveTo(bx,yb-hh); g.lineTo(bx-ww*0.42,yb-hh*0.5); g.lineTo(bx+ww*0.42,yb-hh*0.5); g.closePath(); g.fill(); } }
+    } else if(pr.type==="cristal"){
+      const H0=u*0.85;
+      for(let c=0;c<3;c++){ const off=(c-1)*u*0.16, hh=H0*(0.55+0.25*c), ww=u*0.08;
+        g.fillStyle=rgba(pal.glow,0.85); g.beginPath(); g.moveTo(bx+off,by-hh); g.lineTo(bx+off-ww,by-hh*0.32); g.lineTo(bx+off,by); g.lineTo(bx+off+ww,by-hh*0.32); g.closePath(); g.fill(); }
+      const cg=g.createRadialGradient(bx,by-H0*0.5,1,bx,by-H0*0.5,u*0.5);
+      cg.addColorStop(0,rgba(pal.glow,0.4)); cg.addColorStop(1,rgba(pal.glow,0)); g.fillStyle=cg; g.beginPath(); g.arc(bx,by-H0*0.5,u*0.5,0,Math.PI*2); g.fill();
+    } else if(pr.type==="roca"){
+      const rw=u*0.3, rh=u*0.52; g.fillStyle=F([58,46,42]);
+      g.beginPath(); g.moveTo(bx-rw,by); g.lineTo(bx-rw*0.4,by-rh); g.lineTo(bx+rw*0.3,by-rh*0.78); g.lineTo(bx+rw,by); g.closePath(); g.fill();
+      g.fillStyle="rgba(255,120,45,0.55)"; g.fillRect(bx-rw*0.35,by-rh*0.32,rw*0.55,Math.max(1,rh*0.12));
+    }
+  }
   function drawPlatforms(pal){
     const ord=[...segs].sort((a,b)=>b.z1-a.z1);
     // por losa, de lejos a cerca: la losa cercana (sólida) tapa a la lejana, y la transparencia del faldón solo deja ver el fondo o losas ya pintadas
-    for(const s of ord){ drawWalls(s,pal); drawBevel(s,pal); drawTop(s,pal); if(pal.line>0.01) drawLane(s,pal); }
+    for(const s of ord){ drawWalls(s,pal); drawBevel(s,pal); drawTop(s,pal); if(pal.line>0.01) drawLane(s,pal);
+      if(s.props) for(const pr of s.props) drawProp(pr,pal); }
   }
 
   /* ---------- Bola de bolos + sombra 3D (solo si hay suelo debajo) ---------- */
@@ -563,6 +608,24 @@
   addEventListener("orientationchange",resize);
   if(window.visualViewport) visualViewport.addEventListener("resize",resize);
   document.addEventListener("visibilitychange",()=>{ if(!document.hidden) last=performance.now(); });
+
+  /* ---------- Modo pruebas (#test): saltar a cada bioma sin jugar ---------- */
+  function jumpTo(m){
+    if(cover){ cover.classList.add("hide"); cover.style.display="none"; }
+    audioResume(); if(state!==S.RUN) start();
+    ballZ=m; ballX=0; ballY=0; vy=0; jumping=false; falling=false; fallT=0;
+    segs=[{z0:ballZ-2,z1:ballZ+6,xc:0,half:HALF,props:makeProps(ballZ-2,ballZ+6,0)}];
+    frontier=ballZ+6; lastXc=0; lastBiome=null; camZ=ballZ-CAMBACK; genAhead();
+  }
+  if(location.hash==="#test" || location.search.indexOf("test")>=0){
+    const bar=document.createElement("div");
+    bar.style.cssText="position:fixed;left:6px;right:6px;top:calc(var(--sat) + 96px);z-index:30;display:flex;flex-wrap:wrap;gap:6px;justify-content:center";
+    B.forEach((b,i)=>{ const btn=document.createElement("button"); btn.textContent=b.name;
+      btn.style.cssText="font:700 10px/1 Arial;padding:7px 8px;border:0;border-radius:8px;background:rgba(18,18,28,.74);color:#fff;-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)";
+      btn.addEventListener("pointerdown",e=>{ e.preventDefault(); e.stopPropagation(); jumpTo(i*PER+Math.floor(PER/2)); });
+      bar.appendChild(btn); });
+    document.body.appendChild(bar);
+  }
 
   reset(); resize(); requestAnimationFrame(loop);
 })();
